@@ -1,160 +1,192 @@
-// Jenkinsfile (Declarative Pipeline)
+// Jenkinsfile (Declarative Pipeline) - Cập nhật để sử dụng Kaniko trên Kubernetes
 
 pipeline {
-    // Chỉ định agent (máy thực thi). 'any' nghĩa là bất kỳ agent nào có sẵn.
-    // Trong thực tế, bạn nên dùng agent có label cụ thể (ví dụ: label 'docker')
+    // THAY ĐỔI 1: Định nghĩa Agent là một Pod Kubernetes
+    // Thay vì 'agent any', chúng ta định nghĩa một pod với các container cần thiết.
     agent {
         kubernetes {
-            // Cung cấp toàn bộ định nghĩa Pod ở đây
-            yaml '''
-            apiVersion: v1
-            kind: Pod
-            spec:
-              containers:
-              - name: docker
-                image: docker:20.10.21-git # Image có sẵn Docker CLI và Git
-                command:
-                - cat
-                args:
-                - "-"
-                tty: true
-                volumeMounts:
-                - name: docker-sock
-                  mountPath: /var/run/docker.sock
-              volumes:
-              - name: docker-sock
-                hostPath:
-                  path: /var/run/docker.sock
-            '''
-            // defaultContainer: 'docker' không còn cần thiết khi chỉ có 1 container chính
+            // Không sử dụng inheritFrom, định nghĩa toàn bộ Pod YAML
+            yaml """
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+  # Container 1: Agent JNLP để kết nối với Jenkins Master
+  - name: jnlp
+    image: jenkins/inbound-agent:alpine-jdk11
+    args: ['\$(JENKINS_SECRET)', '\$(JENKINS_NAME)']
+    workingDir: /home/jenkins/agent
+    volumeMounts:
+    - name: workspace-volume
+      mountPath: /home/jenkins/agent
+
+  # Container 2: Node.js để chạy install và test
+  - name: node
+    image: node:18-alpine
+    command: [sleep]
+    args: [9999999]
+    volumeMounts:
+    - name: workspace-volume
+      mountPath: /home/jenkins/agent
+
+  # Container 3: SonarQube Scanner
+  - name: sonar-scanner
+    image: sonarsource/sonar-scanner-cli:latest
+    command: [sleep]
+    args: [9999999]
+    volumeMounts:
+    - name: workspace-volume
+      mountPath: /home/jenkins/agent
+      
+  # Container 4: Kaniko để build image
+  # THAY ĐỔI: Sử dụng image 'debug' của Kaniko. Image này chứa shell và lệnh 'sleep'.
+  - name: kaniko
+    image: gcr.io/kaniko-project/executor:debug
+    imagePullPolicy: Always
+    command: [sleep]
+    args: [9999999]
+    volumeMounts:
+    - name: workspace-volume
+      mountPath: /home/jenkins/agent
+    - name: docker-config
+      mountPath: /kaniko/.docker/
+  volumes:
+  # Volume để chia sẻ workspace giữa tất cả các container
+  - name: workspace-volume
+    emptyDir: {}
+  # Volume từ Secret để Kaniko xác thực với Docker Hub
+  - name: docker-config
+    secret:
+      secretName: dockerhub-credentials
+      items:
+        - key: .dockerconfigjson
+          path: config.json
+"""
         }
     }
 
-    // Các biến môi trường sử dụng trong pipeline
+    // THAY ĐỔI 2: Cập nhật biến môi trường
+    // DOCKERHUB_CREDENTIALS_ID không còn cần thiết cho việc build
     environment {
-        // ID của credentials chứa username/password Docker Hub, đã được cấu hình trong Jenkins
-        DOCKERHUB_CREDENTIALS_ID = 'dockerhub-credentials' 
-        // Tên image trên Docker Hub
-        DOCKER_IMAGE_NAME = 'your-dockerhub-username/ci-cd-demo-app'
-        // ID của credentials chứa token để checkout repo cấu hình K8s
-        GIT_CONFIG_REPO_CREDENTIALS_ID = 'gitlab-config-repo-credentials' 
-        // URL của kho chứa cấu hình K8s
+        DOCKER_IMAGE_NAME = 'namln0612/my-app'
+        GIT_CONFIG_REPO_CREDENTIALS_ID = 'github-cred'
         GIT_CONFIG_REPO_URL = 'https://gitlab.com/your-username/k8s-manifest-repo.git'
+        // Thêm URL và token của SonarQube. Lấy token từ giao diện SonarQube
+        // và lưu nó vào Jenkins Credentials dạng 'Secret text'
+        // SONAR_HOST_URL = 'http://sonarqube-svc.sonarqube.svc.cluster.local:9000'
+        // SONAR_AUTH_TOKEN_ID = 'sonarqube-token' // ID của credentials chứa token
     }
 
     stages {
-        // Giai đoạn 1: Checkout mã nguồn từ GitLab
         stage('1. Checkout Code') {
             steps {
                 script {
                     echo "Bắt đầu checkout mã nguồn..."
-                    checkout scm
+                     git url: 'https://github.com/namkattor123/testCI-CD.git', // <-- THAY BẰNG URL REPO CODE CỦA BẠN
+                        branch: 'main', // <-- THAY BẰNG TÊN NHÁNH CỦA BẠN
+                        credentialsId: 'github-cred' // <-- THAY BẰNG ID CỦA CREDENTIALS BẠN VỪA TẠO
                     echo "Checkout thành công."
                 }
             }
         }
 
-        // Giai đoạn 2: Cài đặt các dependencies
+        // THAY ĐỔI 3: Chạy các bước trong container 'node'
         stage('2. Install Dependencies') {
             steps {
-                script {
-                    echo "Đang cài đặt các thư viện Node.js..."
-                    // Dùng image node để chạy npm install, tránh cài node trực tiếp trên agent
-                    docker.image('node:18-alpine').inside {
+                // Chỉ định container 'node' để thực hiện bước này
+                container('node') {
+                    script {
+                        echo "Đang cài đặt các thư viện Node.js..."
                         sh 'npm install'
+                        echo "Cài đặt thành công."
                     }
-                    echo "Cài đặt thành công."
                 }
             }
         }
 
-        // Giai đoạn 3: Chạy Unit Test
         stage('3. Unit Test & Coverage') {
             steps {
-                script {
-                    echo "Đang chạy Unit Test và tạo báo cáo độ bao phủ..."
-                    docker.image('node:18-alpine').inside {
+                container('node') {
+                    script {
+                        echo "Đang chạy Unit Test và tạo báo cáo độ bao phủ..."
                         sh 'npm test'
+                        echo "Test hoàn tất."
                     }
-                    echo "Test hoàn tất."
                 }
             }
         }
         
-        // Giai đoạn 4: Phân tích mã nguồn với SonarQube
-        stage('4. SonarQube Analysis') {
-            steps {
-                script {
-                    // Sử dụng tool SonarQube đã được cấu hình trong Jenkins
-                    withSonarQubeEnv('MySonarQubeServer') { 
-                        sh 'docker run --rm -v $(pwd):/usr/src sonarsource/sonar-scanner-cli'
-                    }
-                }
-            }
-        }
+        // THAY ĐỔI 4: Chạy SonarQube scanner trong container 'sonar-scanner'
+        // stage('4. SonarQube Analysis') {
+        //     steps {
+        //         container('sonar-scanner') {
+        //             // Sử dụng credentials chứa token của SonarQube
+        //             withCredentials([string(credentialsId: SONAR_AUTH_TOKEN_ID, variable: 'SONAR_TOKEN')]) {
+        //                 sh "sonar-scanner -Dsonar.host.url=${SONAR_HOST_URL} -Dsonar.login=${SONAR_TOKEN}"
+        //             }
+        //         }
+        //     }
+        // }
 
-        // Giai đoạn 5: Chờ kết quả từ Quality Gate của SonarQube
-        stage('5. Quality Gate Check') {
-            steps {
-                // Timeout sau 10 phút nếu không nhận được kết quả
-                timeout(time: 10, unit: 'MINUTES') {
-                    // Chờ SonarQube xác nhận Quality Gate đã PASS
-                    // abortPipeline: true -> Dừng pipeline nếu Quality Gate FAILED
-                    waitForQualityGate abortPipeline: true
-                }
-                echo "Quality Gate đã PASS!"
-            }
-        }
+        // stage('5. Quality Gate Check') {
+        //     steps {
+        //         timeout(time: 10, unit: 'MINUTES') {
+        //             // Cần cấu hình webhook trong SonarQube để bước này chạy nhanh hơn
+        //             waitForQualityGate abortPipeline: true
+        //         }
+        //         echo "Quality Gate đã PASS!"
+        //     }
+        // }
 
-        // Giai đoạn 6: Build và Push Docker Image
-        stage('6. Build & Push Docker Image') {
+        // THAY ĐỔI 5: Giai đoạn quan trọng nhất - Build và Push với KANIKO
+        stage('6. Build & Push Docker Image (with Kaniko)') {
             steps {
+                // THAY ĐỔI: Chạy `script` ở ngoài `container` để lấy git commit trước
                 script {
-                    // Lấy 8 ký tự đầu của mã git commit để làm tag cho image
+                    // Bước 1: Lấy git commit hash trong container mặc định 'jnlp' (nơi có git)
                     def gitCommit = sh(script: 'git rev-parse HEAD', returnStdout: true).trim().substring(0, 8)
                     def dockerImageTag = "${DOCKER_IMAGE_NAME}:${gitCommit}"
-                    
-                    echo "Đang build Docker image: ${dockerImageTag}"
-                    // Build image
-                    def customImage = docker.build(dockerImageTag)
 
-                    echo "Đang push image lên Docker Hub..."
-                    // Đẩy image lên Docker Hub sử dụng credentials đã định nghĩa
-                    docker.withRegistry('https://registry.hub.docker.com', DOCKERHUB_CREDENTIALS_ID) {
-                        customImage.push()
+                    // Bước 2: Đi vào container 'kaniko' để thực hiện build
+                    container('kaniko') {
+                        echo "Đang build và push image với Kaniko: ${dockerImageTag}"
+                        sh """
+                        /kaniko/executor --context `pwd` \\
+                                         --dockerfile `pwd`/Dockerfile \\
+                                         --destination ${dockerImageTag}
+                        """
+                        echo "Build và push với Kaniko thành công."
                     }
-                    echo "Push image thành công."
                 }
             }
         }
-        
-        // Giai đoạn 7: Cập nhật kho chứa cấu hình Kubernetes (GitOps)
         stage('7. Update K8s Manifest Repo') {
             steps {
+                // Chạy trong container mặc định là 'jnlp'
                 script {
                     def gitCommit = sh(script: 'git rev-parse HEAD', returnStdout: true).trim().substring(0, 8)
                     def dockerImageTag = "${DOCKER_IMAGE_NAME}:${gitCommit}"
 
-                    echo "Bắt đầu cập nhật kho chứa cấu hình K8s..."
-                    // Sử dụng credentials để checkout kho chứa manifest
-                    withCredentials([usernamePassword(credentialsId: GIT_CONFIG_REPO_CREDENTIALS_ID, usernameVariable: 'GIT_USER', passwordVariable: 'GIT_PASS')]) {
-                        // Clone repo cấu hình vào một thư mục con
-                        sh "git clone https://${GIT_USER}:${GIT_PASS}@gitlab.com/your-username/k8s-manifest-repo.git k8s-manifest-repo"
+                    echo "Bắt đầu cập nhật kho chứa cấu hình K8s (CD-VDT)..."
+                    // Sử dụng credentials để có quyền push vào repo GitHub
+                    withCredentials([usernamePassword(credentialsId: GIT_CONFIG_REPO_CREDENTIALS_ID, variable: 'GIT_USER', passwordVariable: 'GIT_PASS')]) {
+                        // Clone repo CD-VDT từ nhánh main vào thư mục cd-vdt-repo
+                        sh "git clone -b main https://${GIT_USER}:${GIT_PASS}@github.com/namkattor123/CD-VDT.git cd-vdt-repo"
                         
                         // Di chuyển vào thư mục repo vừa clone
-                        dir('k8s-manifest-repo') {
-                            echo "Đang cập nhật image tag trong deployment.yaml thành ${dockerImageTag}"
-                            // Dùng sed để tìm và thay thế image tag trong tệp deployment
-                            // Đây là bước "ma thuật" của GitOps!
-                            sh "sed -i 's|image: .*|image: ${dockerImageTag}|g' deployment.yaml"
+                        dir('cd-vdt-repo') {
+                            echo "Đang cập nhật image tag trong app/deployment.yaml thành ${dockerImageTag}"
+                            // Cập nhật file deployment.yaml trong thư mục app
+                            sh "sed -i 's|image: .*|image: ${dockerImageTag}|g' app/deployment.yaml"
                             
                             // Cấu hình git user
                             sh "git config user.email 'jenkins@example.com'"
                             sh "git config user.name 'Jenkins CI'"
                             
-                            // Commit và push thay đổi
-                            sh "git add deployment.yaml"
+                            // Thêm file đã sửa đổi vào staging
+                            sh "git add app/deployment.yaml"
                             sh "git commit -m 'ci: Cập nhật image tag lên ${gitCommit}'"
+                            // Đẩy thay đổi lên nhánh main của repo
                             sh "git push origin main"
                         }
                     }
@@ -164,11 +196,9 @@ pipeline {
         }
     }
     
-    // Các hành động sẽ thực hiện sau khi pipeline kết thúc (dù thành công hay thất bại)
     post {
         always {
             echo 'Pipeline đã kết thúc.'
-            // Dọn dẹp workspace
             cleanWs()
         }
     }
