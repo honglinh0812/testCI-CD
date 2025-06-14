@@ -68,9 +68,9 @@ spec:
     // THAY ĐỔI 2: Cập nhật biến môi trường
     // DOCKERHUB_CREDENTIALS_ID không còn cần thiết cho việc build
     environment {
-        DOCKER_IMAGE_NAME = 'namln0612/my-app'
-        GIT_CONFIG_REPO_CREDENTIALS_ID = 'github-cred'
-        GIT_CONFIG_REPO_URL = 'https://gitlab.com/your-username/k8s-manifest-repo.git'
+        DOCKER_IMAGE_NAME = 'linhx021/cd-vdt'
+        GIT_CONFIG_REPO_CREDENTIALS_ID = 'github-cd-repo-credentials'
+        GIT_CONFIG_REPO_URL = 'https://gitlab.com/honglinh0812/CD-VDT.git'
         // Thêm URL và token của SonarQube. Lấy token từ giao diện SonarQube
         // và lưu nó vào Jenkins Credentials dạng 'Secret text'
         // SONAR_HOST_URL = 'http://sonarqube-svc.sonarqube.svc.cluster.local:9000'
@@ -82,9 +82,9 @@ spec:
             steps {
                 script {
                     echo "Bắt đầu checkout mã nguồn..."
-                     git url: 'https://github.com/namkattor123/testCI-CD.git', // <-- THAY BẰNG URL REPO CODE CỦA BẠN
+                     git url: 'https://github.com/honglinh0812/testCI-CD.git', // <-- THAY BẰNG URL REPO CODE CỦA BẠN
                         branch: 'main', // <-- THAY BẰNG TÊN NHÁNH CỦA BẠN
-                        credentialsId: 'github-cred' // <-- THAY BẰNG ID CỦA CREDENTIALS BẠN VỪA TẠO
+                        credentialsId: 'github-cd-repo-credentials' // <-- THAY BẰNG ID CỦA CREDENTIALS BẠN VỪA TẠO
                     echo "Checkout thành công."
                 }
             }
@@ -171,7 +171,7 @@ spec:
                     // Sử dụng credentials để có quyền push vào repo GitHub
                     withCredentials([usernamePassword(credentialsId: GIT_CONFIG_REPO_CREDENTIALS_ID, variable: 'GIT_USER', passwordVariable: 'GIT_PASS')]) {
                         // Clone repo CD-VDT từ nhánh main vào thư mục cd-vdt-repo
-                        sh "git clone -b main https://${GIT_USER}:${GIT_PASS}@github.com/namkattor123/CD-VDT.git cd-vdt-repo"
+                        sh "git clone -b main https://${GIT_USER}:${GIT_PASS}@github.com/honglinh0812/CD-VDT.git cd-vdt-repo"
                         
                         // Di chuyển vào thư mục repo vừa clone
                         dir('cd-vdt-repo') {
@@ -180,8 +180,8 @@ spec:
                             sh "sed -i 's|image: .*|image: ${dockerImageTag}|g' app/deployment.yaml"
                             
                             // Cấu hình git user
-                            sh "git config user.email 'jenkins@example.com'"
-                            sh "git config user.name 'Jenkins CI'"
+                            sh "git config user.email 'honglinh0812uet@gmail.com'"
+                            sh "git config user.name 'honglinh0812'"
                             
                             // Thêm file đã sửa đổi vào staging
                             sh "git add app/deployment.yaml"
